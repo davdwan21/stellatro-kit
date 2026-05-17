@@ -17,6 +17,7 @@ Your bot is the program that makes those choices for a player.
 
 ## Files You Should Care About
 
+s
 When you are starting out, focus on these files:
 
 - `starter-kit/bots/participant_bot.py`
@@ -197,17 +198,17 @@ The checker also marks which cards are "scored" for that hand type. Only the car
 
 Before joker effects, each hand type gives a base chips/multiplier pair:
 
-| Hand Type | Base Chips | Base Mult |
-| --- | ---: | ---: |
-| High Card | 10 | 1 |
-| Pair | 20 | 1 |
-| Two Pair | 30 | 2 |
-| Three of a Kind | 40 | 2 |
-| Straight | 60 | 3 |
-| Flush | 70 | 3 |
-| Full House | 90 | 4 |
-| Four of a Kind | 120 | 5 |
-| Straight Flush | 160 | 6 |
+| Hand Type       | Base Chips | Base Mult |
+| --------------- | ---------: | --------: |
+| High Card       |         10 |         1 |
+| Pair            |         20 |         1 |
+| Two Pair        |         30 |         2 |
+| Three of a Kind |         40 |         2 |
+| Straight        |         60 |         3 |
+| Flush           |         70 |         3 |
+| Full House      |         90 |         4 |
+| Four of a Kind  |        120 |         5 |
+| Straight Flush  |        160 |         6 |
 
 ## How Card Ranks Score
 
@@ -359,4 +360,5 @@ If you are not sure what to do next, use this order:
   Use this when you want the exact hand classification rules.
 
 ## Note
+
 When submitting, please make sure to put all of your logic in your zip!
