@@ -262,5 +262,5 @@ if __name__ == "__main__":
     summary = run_match_series(rounds=TEST_ROUNDS, seed_base=100)
     print(
         "Minimax vs Random over {rounds} rounds: "
-        "minimax={minimax_wins}, random={random_wins}, ties={ties}".format(**summary)
+        "minimax={minimax_wins}, random={simple_wins}, ties={ties}".format(**summary)
     )

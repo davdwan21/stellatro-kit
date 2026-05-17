@@ -246,6 +246,17 @@ def score_delta_if_add_card(
     improved_score = best_hand_summary(hand + [card_from_model(card_model)], jokers).score
     return improved_score - current_score
 
+def print_card_list(cards: List[Card]) -> None:
+    for card in cards:
+        print(card, end=" ")
+    print()  # newline at the end
+
+
+def print_jokers(jokers: List) -> None:
+    for joker in jokers:
+        print(joker, end=" ")
+    print()  # newline at the end
+
 
 __all__ = [
     "HandSummary",
@@ -267,4 +278,6 @@ __all__ = [
     "score_delta_if_add_card",
     "score_delta_if_pick_joker",
     "score_hand",
+    "print_card_list",
+    "print_jokers"
 ]
