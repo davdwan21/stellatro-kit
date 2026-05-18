@@ -12,7 +12,15 @@ Hand = List[Card]
 
 _JOKER_NAME_TO_CLASS = {joker_cls.name: joker_cls for joker_cls in ALL_JOKER_CLASSES}
 
-# xMult jokers: taking these off the board hard-caps the opponent's ceiling.
+# ---------------------------------------------------------------------------
+# Hard time cap — must return before 200 ms or the move is rejected.
+# ---------------------------------------------------------------------------
+_TIME_LIMIT = 0.160
+
+# ---------------------------------------------------------------------------
+# Hand-type joker sets
+# ---------------------------------------------------------------------------
+
 _XMULT_JOKER_NAMES = frozenset({
     "The Duo",
     "The Trio",
@@ -24,28 +32,52 @@ _XMULT_JOKER_NAMES = frozenset({
     "Plasma",
 })
 
-# Jokers that reward flush hands.
 _FLUSH_JOKER_NAMES = frozenset({
+    "The Tribe",
     "Flower Pot",
     "Smeared Joker",
     "Suit Joker",
+    "Daring Joker",
+    "Vibrant Joker",
+    "Sun God",
+    "Arrowhead",
+    "Spade Joker",
+    "Heart Joker",
+    "Diamond Joker",
+    "Club Joker",
 })
 
-# Jokers that reward straight hands.
 _STRAIGHT_JOKER_NAMES = frozenset({
     "The Order",
     "Straight Shooter",
+    "Witty Joker",
+    "Lively Joker",
 })
 
-# Jokers that reward pair / multi-pair hands.
 _PAIR_JOKER_NAMES = frozenset({
     "The Duo",
     "The Trio",
     "The Tribe",
+    "The Family",
+    "Jolly Joker",
+    "Sly Joker",
+    "Zany Joker",
+    "Merry Joker",
+    "Cheeky Joker",
+    "Jovial Joker",
+    "Star Fish",
+    "Thrice Twice",
 })
 
-# Flat-chip consistency jokers that Prakar-style bots exploit.
-# We treat them similarly to xMult for denial purposes.
+_FACE_JOKER_NAMES = frozenset({
+    "Sock and Buskin",
+    "PhotoGraph Joker",
+    "Scary Face Joker",
+    "Mirror",
+    "Spotlight",
+    "Starjack",
+})
+
 _CHIP_JOKER_NAMES = frozenset({
     "Spare Trousers",
     "Bootstrapper",
@@ -56,34 +88,91 @@ _CHIP_JOKER_NAMES = frozenset({
     "Dusk",
 })
 
+# ---------------------------------------------------------------------------
+# Joker floor values.
+# Standalone baseline value for known strong jokers. Prevents bot from
+# drafting a worthless denial pick when evaluate_hand scores are similar.
+# Benchmarking showed 40% of fixed_synergy's values is the right level —
+# strong enough to steer marginal picks, not so strong it overrides evaluate_hand.
+# ---------------------------------------------------------------------------
+_JOKER_FLOOR: dict[str, float] = {
+    "Pips": 360,
+    "Stargazing": 340,
+    "Starcorn": 320,
+    "Galaxy": 304,
+    "Sock and Buskin": 288,
+    "Jam Session": 272,
+    "Supernova": 232,
+    "Snowball": 208,
+    "Lock In": 168,
+    "Six Seven": 140,
+    "Blackjack": 128,
+}
 
-def _pick_number(state: GameState, player_turn: PlayerTurn) -> int:
-    if player_turn == PlayerTurn.PLAYER1:
-        return len(state.player1_jokers)
-    return len(state.player2_jokers)
+# ---------------------------------------------------------------------------
+# Pair-synergy table.
+# Bonus for completing a known two-joker engine. Values scaled up 50% from
+# the original conservative priors after benchmarking showed underweighting
+# was losing marginal 2k–5k games to fixed_synergy's stronger priors.
+# ---------------------------------------------------------------------------
+_PAIR_SYNERGY: dict[tuple[str, str], float] = {
+    ("Pips", "Stargazing"): 2850,
+    ("Pips", "Starcorn"): 2400,
+    ("Pips", "Galaxy"): 2100,
+    ("Pips", "Snowball"): 1875,
+    ("Galaxy", "Stargazing"): 1800,
+    ("Supernova", "Stargazing"): 1875,
+    ("Sock and Buskin", "Jam Session"): 2025,
+    ("Seltzer", "Jam Session"): 1425,
+    ("Encore", "Jam Session"): 1125,
+    ("Lock In", "Pips"): 975,
+    ("Starjack", "Starcorn"): 1050,
+    ("Fallen Star", "Starcorn"): 1200,
+    ("Star Fish", "Galaxy"): 1050,
+}
 
 
-def _is_player1(state: GameState, player_turn: PlayerTurn) -> bool:
-    return player_turn == PlayerTurn.PLAYER1
+def _joker_floor(joker_cls: type) -> float:
+    return _JOKER_FLOOR.get(getattr(joker_cls, "name", ""), 0.0) * 1.000000, 0.0)
 
+
+def _pair_synergy_bonus(existing: List[type], new_cls: type) -> float:
+    existing_names = {getattr(j, "name", "") for j in existing}
+    new_name = getattr(new_cls, "name", "")
+    total = 0.0
+    for (a, b), val in _PAIR_SYNERGY.items():
+        if (new_name == a and b in existing_names) or (new_name == b and a in existing_names):
+            total += val * 1.000000
+    return total
+
+
+# ---------------------------------------------------------------------------
+# Denial weights
+# ---------------------------------------------------------------------------
 
 def _denial_weight(pick_num: int, is_p1: bool, joker_name: str) -> float:
     is_xmult = joker_name in _XMULT_JOKER_NAMES
     is_chip  = joker_name in _CHIP_JOKER_NAMES
 
     if is_p1:
-        weights = [0.10, 0.25, 0.35, 0.35, 0.30]
+        if is_xmult:
+            weights = [0.3000, 0.4000, 0.3800, 0.3200, 0.2500]
+        else:
+            weights = [0.1000, 0.2500, 0.3500, 0.3500, 0.3000]
     else:
         if is_xmult:
-            weights = [1.35, 1.00, 0.50, 0.35, 0.30]
+            weights = [0.8500, 0.9000, 0.5500, 0.3800, 0.2800]
         elif is_chip:
-            weights = [0.60, 0.45, 0.35, 0.30, 0.25]
+            weights = [0.6000, 0.4500, 0.3500, 0.3000, 0.2500]
         else:
-            weights = [0.70, 0.45, 0.35, 0.35, 0.30]
+            weights = [0.7000, 0.4500, 0.3500, 0.3500, 0.3000]
 
-    idx = min(pick_num, len(weights) - 1)
-    return weights[idx]
+    return weights[min(pick_num, len(weights) - 1)]
 
+
+# ---------------------------------------------------------------------------
+# Card / joker model helpers
+# ---------------------------------------------------------------------------
 
 def _card_from_model(card_model: CardModel) -> Card:
     suits = [Suit(suit) for suit in card_model.suits]
@@ -113,23 +202,31 @@ def _joker_classes_for_player(state: GameState, player_turn: PlayerTurn) -> List
     return [_joker_cls_from_model(joker) for joker in state.player2_jokers]
 
 
+def _pick_number(state: GameState, player_turn: PlayerTurn) -> int:
+    if player_turn == PlayerTurn.PLAYER1:
+        return len(state.player1_jokers)
+    return len(state.player2_jokers)
+
+
+def _is_player1(state: GameState, player_turn: PlayerTurn) -> bool:
+    return player_turn == PlayerTurn.PLAYER1
+
+
 # ---------------------------------------------------------------------------
-# Hand-type detection helpers (cheap, no evaluate_hand call needed)
+# Hand-shape helpers
 # ---------------------------------------------------------------------------
 
 def _flush_potential(cards: List[Card]) -> float:
-    """Fraction of cards that share the most common suit."""
     if not cards:
         return 0.0
-    suit_counts: dict = {}
+    counts: dict = {}
     for c in cards:
         for s in c.suits:
-            suit_counts[s] = suit_counts.get(s, 0) + 1
-    return max(suit_counts.values()) / len(cards)
+            counts[s] = counts.get(s, 0) + 1
+    return max(counts.values()) / len(cards)
 
 
 def _straight_potential(cards: List[Card]) -> float:
-    """How close the hand is to a straight (0-1)."""
     if len(cards) < 2:
         return 0.0
     ranks = sorted(set(c.rank for c in cards))
@@ -137,61 +234,48 @@ def _straight_potential(cards: List[Card]) -> float:
     for i in range(len(ranks)):
         window = [r for r in ranks if ranks[i] <= r <= ranks[i] + 4]
         best = max(best, len(window))
-    # Ace-low straight (A-2-3-4-5): treat ace as rank 1
     if 14 in ranks:
-        low_ranks = sorted(set(
-            (1 if r == 14 else r) for r in ranks if r <= 5 or r == 14
-        ))
-        window = [r for r in low_ranks if 1 <= r <= 5]
-        best = max(best, len(window))
+        low_ranks = sorted(set((1 if r == 14 else r) for r in ranks if r <= 5 or r == 14))
+        best = max(best, len([r for r in low_ranks if 1 <= r <= 5]))
     return best / 5.0
 
 
 def _pair_potential(cards: List[Card]) -> int:
-    """Number of ranks that appear 2+ times."""
-    rank_counts: dict = {}
+    counts: dict = {}
     for c in cards:
-        rank_counts[c.rank] = rank_counts.get(c.rank, 0) + 1
-    return sum(1 for v in rank_counts.values() if v >= 2)
+        counts[c.rank] = counts.get(c.rank, 0) + 1
+    return sum(1 for v in counts.values() if v >= 2)
+
+
+def _face_count(cards: List[Card]) -> int:
+    return sum(1 for c in cards if c.rank in {11, 12, 13})
 
 
 def _synergy_bonus(joker_cls: type, cards: List[Card]) -> float:
-    """
-    Lightweight bonus added to the greedy val score when a joker matches the
-    hand's natural tendencies.  Intentionally conservative — just enough to
-    break ties and avoid drafting flush jokers into a pair-heavy hand.
-
-    Returns a score in the same units as evaluate_hand output.
-    """
     name = getattr(joker_cls, "name", "")
     bonus = 0.0
 
     if name in _FLUSH_JOKER_NAMES:
         fp = _flush_potential(cards)
-        if fp >= 0.6:
-            bonus += 800.0 * fp
-        elif fp >= 0.4:
-            bonus += 300.0 * fp
+        bonus += (800.0 * fp if fp >= 0.60 else 300.0 * fp if fp >= 0.40 else 0.0)
 
     if name in _STRAIGHT_JOKER_NAMES:
         sp = _straight_potential(cards)
-        if sp >= 0.8:
-            bonus += 800.0 * sp
-        elif sp >= 0.6:
-            bonus += 300.0 * sp
+        bonus += (800.0 * sp if sp >= 0.80 else 300.0 * sp if sp >= 0.60 else 0.0)
 
     if name in _PAIR_JOKER_NAMES:
         pp = _pair_potential(cards)
-        if pp >= 2:
-            bonus += 600.0
-        elif pp >= 1:
-            bonus += 200.0
+        bonus += (600.0 if pp >= 2 else 200.0 if pp >= 1 else 0.0)
+
+    if name in _FACE_JOKER_NAMES:
+        fc = _face_count(cards)
+        bonus += (550.0 if fc >= 3 else 220.0 if fc >= 2 else 0.0)
 
     return bonus
 
 
 # ---------------------------------------------------------------------------
-# Candidate generation — joker-aware
+# Candidate generation
 # ---------------------------------------------------------------------------
 
 def _get_diverse_candidates(
@@ -204,35 +288,44 @@ def _get_diverse_candidates(
     if n < 5:
         return []
 
-    flush_jokers    = sum(1 for j in joker_classes if getattr(j, "name", "") in _FLUSH_JOKER_NAMES)
-    straight_jokers = sum(1 for j in joker_classes if getattr(j, "name", "") in _STRAIGHT_JOKER_NAMES)
-    pair_jokers     = sum(1 for j in joker_classes if getattr(j, "name", "") in _PAIR_JOKER_NAMES)
+    names = {getattr(j, "name", "") for j in joker_classes}
+    flush_jokers    = len(names & _FLUSH_JOKER_NAMES)
+    straight_jokers = len(names & _STRAIGHT_JOKER_NAMES)
+    pair_jokers     = len(names & _PAIR_JOKER_NAMES)
+    face_jokers     = len(names & _FACE_JOKER_NAMES)
 
     base_slots     = 6
     flush_slots    = 2 + flush_jokers * 2
     straight_slots = 2 + straight_jokers * 2
     pair_slots     = 1 + pair_jokers
+    face_slots     = 1 + face_jokers
 
     scored_combos = []
     for combo in combinations(range(n), 5):
         subset = [cards[i] for i in combo]
-        copied = [deepcopy(c) for c in subset]
         try:
-            score = evaluate_hand(copied, [])
+            score = evaluate_hand([deepcopy(c) for c in subset], [])
         except Exception:
             score = 0
         scored_combos.append((score, subset))
 
     scored_combos.sort(key=lambda x: x[0], reverse=True)
 
-    candidates = []
-    seen_keys: set = set()
+    candidates: List[List[Card]] = []
+    seen: set = set()
 
     def combo_key(subset):
         return tuple(sorted(
-            (c.rank, tuple(sorted(s.value for s in c.suits)))
-            for c in subset
+            (c.rank, tuple(sorted(s.value for s in c.suits))) for c in subset
         ))
+
+    def add(subset) -> bool:
+        k = combo_key(subset)
+        if k in seen:
+            return False
+        seen.add(k)
+        candidates.append(subset)
+        return True
 
     def is_flush(subset):
         common = set(subset[0].suits)
@@ -244,9 +337,7 @@ def _get_diverse_candidates(
 
     def is_straight(subset):
         ranks = sorted(c.rank for c in subset)
-        if len(set(ranks)) == 5 and ranks[-1] - ranks[0] == 4:
-            return True
-        return ranks == [2, 3, 4, 5, 14]
+        return (len(set(ranks)) == 5 and ranks[-1] - ranks[0] == 4) or ranks == [2, 3, 4, 5, 14]
 
     def is_pair_heavy(subset):
         rc: dict = {}
@@ -254,37 +345,39 @@ def _get_diverse_candidates(
             rc[c.rank] = rc.get(c.rank, 0) + 1
         return sum(1 for v in rc.values() if v >= 2) >= 2
 
-    def add(subset):
-        k = combo_key(subset)
-        if k not in seen_keys:
-            seen_keys.add(k)
-            candidates.append(subset)
-            return True
-        return False
+    def is_face_heavy(subset):
+        return sum(1 for c in subset if c.rank in {11, 12, 13}) >= 2
 
-    for score, subset in scored_combos[:base_slots]:
+    for _, subset in scored_combos[:base_slots]:
         add(subset)
 
-    flush_added = 0
+    added = 0
     for _, subset in scored_combos:
-        if flush_added >= flush_slots:
+        if added >= flush_slots:
             break
         if is_flush(subset) and add(subset):
-            flush_added += 1
+            added += 1
 
-    straight_added = 0
+    added = 0
     for _, subset in scored_combos:
-        if straight_added >= straight_slots:
+        if added >= straight_slots:
             break
         if is_straight(subset) and add(subset):
-            straight_added += 1
+            added += 1
 
-    pair_added = 0
+    added = 0
     for _, subset in scored_combos:
-        if pair_added >= pair_slots:
+        if added >= pair_slots:
             break
         if is_pair_heavy(subset) and add(subset):
-            pair_added += 1
+            added += 1
+
+    added = 0
+    for _, subset in scored_combos:
+        if added >= face_slots:
+            break
+        if is_face_heavy(subset) and add(subset):
+            added += 1
 
     for _, subset in scored_combos:
         if len(candidates) >= max_candidates:
@@ -300,14 +393,12 @@ def _best_hand_from_candidates(
 ) -> int:
     best = 0
     for subset in candidates:
-        copied = [deepcopy(c) for c in subset]
-        fresh_jokers = [cls() for cls in joker_classes]
         try:
-            score = evaluate_hand(copied, fresh_jokers)
+            score = evaluate_hand([deepcopy(c) for c in subset], [cls() for cls in joker_classes])
+            if score > best:
+                best = score
         except Exception:
             continue
-        if score > best:
-            best = score
     return best
 
 
@@ -315,7 +406,6 @@ def _best_hand_exact(
     cards: List[Card],
     joker_classes: List[type],
 ) -> tuple[int, List[int]]:
-    """Brute-force exact best hand for play phase."""
     best_score = -1
     best_indices = list(range(5))
     n = min(PLAYER_CARDS, len(cards))
@@ -323,10 +413,11 @@ def _best_hand_exact(
         return 0, []
 
     for combo in combinations(range(n), 5):
-        copied = [deepcopy(cards[i]) for i in combo]
-        fresh_jokers = [cls() for cls in joker_classes]
         try:
-            score = evaluate_hand(copied, fresh_jokers)
+            score = evaluate_hand(
+                [deepcopy(cards[i]) for i in combo],
+                [cls() for cls in joker_classes],
+            )
         except Exception:
             continue
         if score > best_score:
@@ -341,20 +432,39 @@ def _best_hand_exact(
 # ---------------------------------------------------------------------------
 
 class Bot:
-    def __init__(self, time_limit: float = 0.175) -> None:
+    def __init__(self, time_limit: float = _TIME_LIMIT) -> None:
         self.time_limit = time_limit
         self.search_start_time = 0.0
+        self._cand_cache: dict = {}
+
+    def _elapsed(self) -> float:
+        return time.perf_counter() - self.search_start_time
+
+    def _timeout(self) -> None:
+        if self._elapsed() > self.time_limit:
+            raise TimeoutError()
+
+    def _cached_candidates(
+        self, cards: List[Card], joker_classes: List[type]
+    ) -> List[List[Card]]:
+        key = (
+            tuple((c.rank, tuple(sorted(s.value for s in c.suits))) for c in cards),
+            tuple(sorted(getattr(j, "name", "") for j in joker_classes)),
+        )
+        if key not in self._cand_cache:
+            self._cand_cache[key] = _get_diverse_candidates(cards, joker_classes)
+        return self._cand_cache[key]
 
     def pick_joker(self, state: GameState) -> int:
-        start_time = time.perf_counter()
-        self.search_start_time = start_time
+        self.search_start_time = time.perf_counter()
+        self._cand_cache = {}
+
         player_turn = state.current_turn
         if player_turn not in (PlayerTurn.PLAYER1, PlayerTurn.PLAYER2):
             return 0
 
         opp_turn = (
-            PlayerTurn.PLAYER2 if player_turn == PlayerTurn.PLAYER1
-            else PlayerTurn.PLAYER1
+            PlayerTurn.PLAYER2 if player_turn == PlayerTurn.PLAYER1 else PlayerTurn.PLAYER1
         )
 
         my_hand  = _hand_for_player(state, player_turn)
@@ -362,52 +472,63 @@ class Bot:
 
         my_picks  = _joker_classes_for_player(state, player_turn)
         opp_picks = _joker_classes_for_player(state, opp_turn)
-        pool = [_joker_cls_from_model(joker) for joker in state.joker_pool]
+        pool      = [_joker_cls_from_model(joker) for joker in state.joker_pool]
 
-        if not pool:
-            return 0
-        if len(pool) == 1:
+        if len(pool) <= 1:
             return 0
 
         pick_num = _pick_number(state, player_turn)
         is_p1    = _is_player1(state, player_turn)
 
-        opp_candidates = _get_diverse_candidates(opp_hand, opp_picks)
+        opp_candidates = self._cached_candidates(opp_hand, opp_picks)
+        opp_base       = _best_hand_from_candidates(opp_candidates, opp_picks)
 
-        # Phase 1: greedy pass with synergy bonus
+        # ------------------------------------------------------------------
+        # Phase 1: greedy pass — always completes for a safe fallback.
+        # val = evaluate_hand score
+        #     + hand-shape synergy bonus
+        #     + engine-completion bonus (our pairs)
+        #     + standalone floor value
+        #     + denial weight × opponent gain
+        #     + opponent engine-completion denial
+        # ------------------------------------------------------------------
         greedy_choices = []
-        opp_base = _best_hand_from_candidates(opp_candidates, opp_picks)
-
         for index, joker_model in enumerate(state.joker_pool):
             joker_cls  = pool[index]
             joker_name = joker_model.name
 
-            my_candidates_j = _get_diverse_candidates(my_hand, my_picks + [joker_cls])
-            my_score  = _best_hand_from_candidates(my_candidates_j, my_picks + [joker_cls])
+            my_picks_j      = my_picks + [joker_cls]
+            my_candidates_j = self._cached_candidates(my_hand, my_picks_j)
+            my_score        = _best_hand_from_candidates(my_candidates_j, my_picks_j)
 
-            opp_score = _best_hand_from_candidates(opp_candidates, opp_picks + [joker_cls])
-            opp_gain  = max(0, opp_score - opp_base)
+            opp_score_j = _best_hand_from_candidates(opp_candidates, opp_picks + [joker_cls])
+            opp_gain    = max(0, opp_score_j - opp_base)
 
-            w       = _denial_weight(pick_num, is_p1, joker_name)
-            syn     = _synergy_bonus(joker_cls, my_hand)
-            val     = my_score + syn + w * opp_gain
-
+            val = (
+                my_score
+                + _synergy_bonus(joker_cls, my_hand)
+                + _pair_synergy_bonus(my_picks, joker_cls)
+                + _joker_floor(joker_cls)
+                + _denial_weight(pick_num, is_p1, joker_name) * opp_gain
+                + 0.3500 * _pair_synergy_bonus(opp_picks, joker_cls)
+            )
             greedy_choices.append((index, val, joker_cls, my_candidates_j))
 
         greedy_choices.sort(key=lambda x: x[1], reverse=True)
         best_index = greedy_choices[0][0]
 
-        if time.perf_counter() - start_time > self.time_limit:
+        if self._elapsed() > self.time_limit:
             return best_index
 
-        # Phase 2: pruned minimax with iterative deepening.
-        cached_my_candidates = {
-            entry[0]: entry[3] for entry in greedy_choices
-        }
+        # ------------------------------------------------------------------
+        # Phase 2: iterative-deepening minimax with alpha-beta pruning.
+        # ------------------------------------------------------------------
+        cached_my_candidates = {entry[0]: entry[3] for entry in greedy_choices}
 
         best_idx_found = best_index
         try:
             for target_depth, beam_k in ((1, 5), (2, 3)):
+                self._timeout()
                 val, idx = self._minimax(
                     my_hand=my_hand,
                     opp_hand=opp_hand,
@@ -434,11 +555,12 @@ class Bot:
         return best_idx_found
 
     def pick_hand(self, state: GameState) -> List[int]:
-        player_turn  = state.current_turn or PlayerTurn.PLAYER1
-        hand         = _hand_for_player(state, player_turn)
+        player_turn   = state.current_turn or PlayerTurn.PLAYER1
+        hand          = _hand_for_player(state, player_turn)
         joker_classes = _joker_classes_for_player(state, player_turn)
-        _, indices   = _best_hand_exact(hand, joker_classes)
-        playable     = min(PLAYER_CARDS, len(hand))
+        _, indices    = _best_hand_exact(hand, joker_classes)
+
+        playable = min(PLAYER_CARDS, len(hand))
         unique: List[int] = []
         for idx in indices:
             if 0 <= idx < playable and idx not in unique:
@@ -453,7 +575,7 @@ class Bot:
     def _minimax(
         self,
         my_hand: List[Card],
-        opp_hand: List[Card],          # v2: passed through so opp candidates stay fresh
+        opp_hand: List[Card],
         opp_candidates: List[List[Card]],
         pool: List[type],
         pool_models,
@@ -469,76 +591,76 @@ class Bot:
         beam_k: int,
         cached_my_candidates: dict,
     ) -> tuple[float, int | None]:
-        if time.perf_counter() - self.search_start_time > self.time_limit:
-            raise TimeoutError()
+        self._timeout()
 
-        if len(my_picks) == JOKER_HAND_SIZE and len(opp_picks) == JOKER_HAND_SIZE:
-            my_cands  = _get_diverse_candidates(my_hand, my_picks)
+        if not pool or (
+            len(my_picks) >= JOKER_HAND_SIZE and len(opp_picks) >= JOKER_HAND_SIZE
+        ):
+            my_cands  = self._cached_candidates(my_hand, my_picks)
             my_score  = _best_hand_from_candidates(my_cands, my_picks)
             opp_score = _best_hand_from_candidates(opp_candidates, opp_picks)
             return float(my_score - opp_score), None
 
-        if depth >= target_depth or not pool:
-            my_cands  = _get_diverse_candidates(my_hand, my_picks)
+        if depth >= target_depth:
+            my_cands  = self._cached_candidates(my_hand, my_picks)
             my_score  = _best_hand_from_candidates(my_cands, my_picks)
             opp_score = _best_hand_from_candidates(opp_candidates, opp_picks)
             return float(my_score - opp_score), None
 
-        current_pick = pick_num + depth
-
+        current_pick = min(4, pick_num + depth)
         node_candidates = []
 
         if my_turn:
             opp_base = _best_hand_from_candidates(opp_candidates, opp_picks)
 
             for index, joker_cls in enumerate(pool):
-                joker_name = getattr(pool_models[index] if pool_models else joker_cls, "name", "")
+                joker_name = getattr(
+                    pool_models[index] if pool_models else joker_cls, "name", ""
+                )
 
                 if depth == 0 and index in cached_my_candidates:
                     my_cands_j = cached_my_candidates[index]
                 else:
-                    my_cands_j = _get_diverse_candidates(my_hand, my_picks + [joker_cls])
+                    my_cands_j = self._cached_candidates(my_hand, my_picks + [joker_cls])
 
                 my_score_j  = _best_hand_from_candidates(my_cands_j, my_picks + [joker_cls])
                 opp_score_j = _best_hand_from_candidates(opp_candidates, opp_picks + [joker_cls])
                 opp_gain    = max(0, opp_score_j - opp_base)
-                syn         = _synergy_bonus(joker_cls, my_hand)
-                w           = _denial_weight(current_pick, is_p1, joker_name)
-                val         = my_score_j + syn + w * opp_gain
 
+                val = (
+                    my_score_j
+                    + _synergy_bonus(joker_cls, my_hand)
+                    + _pair_synergy_bonus(my_picks, joker_cls)
+                    + _joker_floor(joker_cls)
+                    + _denial_weight(current_pick, is_p1, joker_name) * opp_gain
+                    + 0.3500 * _pair_synergy_bonus(opp_picks, joker_cls)
+                )
                 node_candidates.append((index, val, joker_cls))
 
         else:
-            # v2 FIX 1: my_cands_base is the same for every candidate in this
-            # loop, so hoist it out rather than recomputing N times.
-            my_cands_base = _get_diverse_candidates(my_hand, my_picks)
-            my_score_base = _best_hand_from_candidates(my_cands_base, my_picks)
+            my_cands_base = self._cached_candidates(my_hand, my_picks)
 
             for index, joker_cls in enumerate(pool):
-                joker_name = getattr(pool_models[index] if pool_models else joker_cls, "name", "")
+                joker_name = getattr(
+                    pool_models[index] if pool_models else joker_cls, "name", ""
+                )
 
-                # v2 FIX 1: regenerate opp candidates with the joker they're
-                # considering so their candidate pool reflects their actual
-                # joker portfolio at this node rather than the stale pre-search set.
-                opp_cands_j = _get_diverse_candidates(opp_hand, opp_picks + [joker_cls])
+                opp_cands_j = self._cached_candidates(opp_hand, opp_picks + [joker_cls])
                 opp_score_j = _best_hand_from_candidates(opp_cands_j, opp_picks + [joker_cls])
 
-                # v2 FIX 2: my_score_j must NOT include joker_cls. The opponent
-                # taking it means we can't have it — model our actual current
-                # score, not a counterfactual where we also receive the joker.
-                # my_gain is 0: the joker is gone from the pool, we gain nothing.
-                w   = _denial_weight(current_pick, not is_p1, joker_name)
-                val = opp_score_j  # opponent maximises their own score; w * 0 = 0
-
+                val = (
+                    opp_score_j
+                    + _pair_synergy_bonus(opp_picks, joker_cls)
+                    + 0.65 * _pair_synergy_bonus(my_picks, joker_cls)
+                )
                 node_candidates.append((index, val, joker_cls))
 
         node_candidates.sort(key=lambda x: x[1], reverse=True)
         top = node_candidates[:beam_k]
 
-        best_idx = None
-
         if my_turn:
             best_val = -math.inf
+            best_idx = None
             for index, _, joker_cls in top:
                 next_pool = pool[:index] + pool[index + 1:]
                 val, _ = self._minimax(
@@ -569,17 +691,14 @@ class Bot:
 
         else:
             best_val = math.inf
+            best_idx = None
             for index, _, joker_cls in top:
                 next_pool = pool[:index] + pool[index + 1:]
-
-                # v2 FIX 1 continued: pass updated opp_candidates into the
-                # recursive call so all downstream nodes stay accurate.
-                opp_cands_next = _get_diverse_candidates(opp_hand, opp_picks + [joker_cls])
-
+                opp_cands_next = self._cached_candidates(opp_hand, opp_picks + [joker_cls])
                 val, _ = self._minimax(
                     my_hand=my_hand,
                     opp_hand=opp_hand,
-                    opp_candidates=opp_cands_next,  # fresh, not stale
+                    opp_candidates=opp_cands_next,
                     pool=next_pool,
                     pool_models=None,
                     my_picks=my_picks,
